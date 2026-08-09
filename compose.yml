@@ -1,0 +1,26 @@
+services:
+  db:
+    image: postgres:16
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: password
+
+  web:
+    build: .
+    # 本来DockerfileにCMDがないと実行するコマンドが何もなくてコンテナがすぐに終了してしまうので、
+    # command: bash -c "rm -f tmp/pids/server.pid && bundle exec rails server -b 0.0.0.0"が必要
+    # しかし、親イメージにCMDがあれば、DockerfileにCMDがなくても親イメージのCMDが継承される
+    # ruby:4.0-slimイメージ自体に、デフォルトのCMDが最初から設定されている
+    tty: true
+    volumes:
+      - .:/app
+    ports:
+      - "3000:3000"
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgres://postgres:password@db/app_development
+
+volumes:
+  db_data:
