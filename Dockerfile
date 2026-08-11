@@ -7,7 +7,6 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     libyaml-dev \
     curl \
     git \
-    node-gyp \
     pkg-config \
   && rm -rf /var/lib/apt/lists/*
 

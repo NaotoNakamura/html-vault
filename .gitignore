@@ -33,3 +33,7 @@
 # Ignore key files for decrypting credentials and more.
 /config/*.key
 
+# Frontend (frontend/ is managed independently of Rails, via pnpm).
+/frontend/node_modules
+/frontend/dist
+
