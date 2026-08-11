@@ -6,11 +6,19 @@ Rails.application.routes.draw do
   namespace :api do
     namespace :v1 do
       resources :user_files, only: %i[index create destroy]
+      resources :bundles, only: %i[index create destroy]
     end
   end
 
   # Direct-link viewer for an uploaded file, e.g. /v/aB3dEf9k
   get "/v/:public_id", to: "preview#show", as: :preview
+
+  # Direct-link viewer for a file within a bundle, e.g. /v/b/aB3dEf9k/style.css.
+  # Serving bundle members under a shared path lets an HTML file's relative
+  # references (<link href="style.css">) resolve against this URL correctly.
+  # format: false is required so a trailing extension like .css isn't parsed
+  # as a Rails response format and stripped from the glob-captured filename.
+  get "/v/b/:bundle_public_id/*filename", to: "preview#bundle_show", as: :bundle_preview, format: false
 
   root to: "fallback#index"
 

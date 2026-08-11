@@ -4,7 +4,7 @@ module Api
       before_action :set_user_file, only: :destroy
 
       def index
-        user_files = UserFile.order(created_at: :desc)
+        user_files = UserFile.where(bundle_id: nil).order(created_at: :desc)
         render json: user_files.map { |user_file| serialize(user_file) }
       end
 
@@ -33,7 +33,6 @@ module Api
       end
 
       def destroy
-        @user_file.file.purge
         @user_file.destroy
         head :no_content
       end
