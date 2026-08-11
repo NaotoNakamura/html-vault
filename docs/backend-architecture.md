@@ -6,6 +6,8 @@ Rails 8.1 (API + フロント配信の単一アプリ)。DB は PostgreSQL、フ
 
 このアプリ (HTML Vault) は、ユーザーがアップロードした静的ファイル (HTML/JS/CSS/JSON/SVG) を保存し、`/v/:public_id` という直リンクでブラウザ上にプレビュー表示できるようにするツール。管理画面 (アップロード/一覧/削除) は React SPA (`frontend/`) が担い、Rails はその API と、アップロード済みファイルの配信を担う。
 
+単体ファイルに加えて、複数の関連ファイル (例: `index.html` + `style.css` + `app.js`) を「バンドル」としてまとめてアップロードすることもできる。バンドル配下のファイルは共通の URL 名前空間 (`/v/b/:bundle_public_id/:filename`) で配信されるため、HTML 内の相対パス参照 (`<link href="style.css">` 等) がプレビュー時に正しく解決される。
+
 ## ディレクトリ構成
 
 ```
@@ -13,12 +15,15 @@ app/
   controllers/
     application_controller.rb       # 全コントローラーの基底。IAP認証ヘルパーを持つ
     fallback_controller.rb          # SPA の entry HTML を返す
-    preview_controller.rb           # /v/:public_id でアップロード済みファイルを配信
+    preview_controller.rb           # /v/:public_id, /v/b/:bundle_public_id/*filename でファイルを配信
     api/v1/
       base_controller.rb            # API共通の基底 (CSRF検証スキップ, 404ハンドリング)
-      user_files_controller.rb      # ファイルの index/create/destroy
+      user_files_controller.rb      # 単体ファイルの index/create/destroy
+      bundles_controller.rb         # バンドル (複数ファイルのセット) の index/create/destroy
   models/
     user_file.rb                    # アップロードファイルのメタデータ + Active Storage 添付
+    bundle.rb                       # 複数の UserFile をまとめる「セット」
+    concerns/has_public_id.rb       # public_id 採番・検証ロジック (UserFile / Bundle 共通)
   helpers/
     application_helper.rb           # Vite 連携ヘルパー (frontend-architecture.md 参照)
   views/
@@ -29,7 +34,7 @@ config/
   storage.yml                       # Active Storage サービス定義 (Disk)
   initializers/content_security_policy.rb  # 未設定 (コメントアウトのみ)
 db/
-  migrate/                          # active_storage テーブル + user_files テーブル
+  migrate/                          # active_storage テーブル + user_files/bundles テーブル
   schema.rb
 ```
 
@@ -38,12 +43,17 @@ db/
 | パス | メソッド | 遷移先 | 用途 |
 |---|---|---|---|
 | `/up` | GET | `rails/health#show` | ヘルスチェック (ロードバランサ等) |
-| `/api/v1/user_files` | GET/POST | `Api::V1::UserFilesController#index` / `#create` | ファイル一覧取得 / アップロード |
-| `/api/v1/user_files/:id` | DELETE | `Api::V1::UserFilesController#destroy` | ファイル削除 |
-| `/v/:public_id` | GET | `PreviewController#show` | アップロード済みファイルの直リンク配信 |
+| `/api/v1/user_files` | GET/POST | `Api::V1::UserFilesController#index` / `#create` | 単体ファイル一覧取得 / アップロード |
+| `/api/v1/user_files/:id` | DELETE | `Api::V1::UserFilesController#destroy` | 単体ファイル削除 |
+| `/api/v1/bundles` | GET/POST | `Api::V1::BundlesController#index` / `#create` | バンドル一覧取得 / 複数ファイル一括アップロード |
+| `/api/v1/bundles/:id` | DELETE | `Api::V1::BundlesController#destroy` | バンドル削除 (配下のファイルもカスケード削除) |
+| `/v/:public_id` | GET | `PreviewController#show` | 単体ファイルの直リンク配信 |
+| `/v/b/:bundle_public_id/*filename` | GET | `PreviewController#bundle_show` | バンドル配下ファイルの直リンク配信 (相対パス参照解決用) |
 | `/` および他の HTML GET (`*path`) | GET | `FallbackController#index` | React SPA の entry HTML を返す (SPAフォールバック) |
 
 `get "*path"` は `constraints: ->(req) { req.format.html? }` で HTML リクエストのみに限定しており、`/api/*` や静的アセットのリクエストを誤って奪わないようにしている。このルートは他のすべてのルートより後に定義する必要がある (実際そうなっている)。
+
+`/v/b/:bundle_public_id/*filename` はグロブセグメント (`*filename`) を使っており、`format: false` を明示している点に注意。指定しないと `style.css` のようなリクエストの末尾 `.css` が Rails によって `params[:format]` として切り出されてしまい、`filename` が `style` に化けてルックアップに失敗する。`/v/:public_id` (1 セグメントのみにマッチ) とはセグメント数が異なるため、ルーティング上の衝突は発生しない。
 
 ## コントローラー層
 
@@ -79,13 +89,13 @@ API 系コントローラー共通の基底。
 
 ### `Api::V1::UserFilesController`
 
-`/api/v1/user_files` の CRUD (一覧・作成・削除のみ、更新は無し)。
+`/api/v1/user_files` の CRUD (一覧・作成・削除のみ、更新は無し)。**バンドルに属さない単体ファイルのみ**を扱う。
 
 | アクション | 処理内容 |
 |---|---|
-| `index` | `UserFile.order(created_at: :desc)` を取得し、`serialize` で JSON 配列化して返す |
+| `index` | `UserFile.where(bundle_id: nil).order(created_at: :desc)` を取得し、`serialize` で JSON 配列化して返す (バンドル配下のファイルは混ざらない) |
 | `create` | `params[:file]` (multipart アップロード) を受け取り、拡張子から `file_type` を、ファイル名 (拡張子除く) から `title` のデフォルト値を決定。`UserFile#file` に添付して保存。バリデーション失敗時は `422` + `errors` |
-| `destroy` | `@user_file.file.purge` で Active Storage 上の実体を削除してから `destroy` |
+| `destroy` | `@user_file.destroy` のみ (Active Storage の実体パージは `UserFile` の `before_destroy` コールバックに委譲) |
 
 `create` のバリデーションはコントローラーではなくモデル (`UserFile`) 側に寄せてある (許可拡張子・サイズ上限など)。
 
@@ -103,49 +113,122 @@ API 系コントローラー共通の基底。
 }
 ```
 
+### `Api::V1::BundlesController`
+
+`/api/v1/bundles` — 複数ファイルを 1 つの「セット」としてアップロード・管理する。
+
+| アクション | 処理内容 |
+|---|---|
+| `index` | `Bundle.includes(:user_files).order(created_at: :desc)` を取得し、各バンドルを配下ファイル込みで JSON 化 |
+| `create` | `params[:files]` (multipart アップロードの配列) を受け取り、`Bundle` と配下の `UserFile` 群をトランザクション内で作成。件数が `Bundle::MAX_FILES` (20) を超える場合は書き込み前に `422` で拒否。配下のいずれかのファイルがバリデーションに失敗した場合は `ActiveRecord::Rollback` で全体を巻き戻し `422` を返す (一部だけ作成される状態にはならない) |
+| `destroy` | `@bundle.destroy` — `Bundle has_many :user_files, dependent: :destroy` により配下の `UserFile` も連鎖削除され、各 `UserFile` の `before_destroy` で添付ファイルもパージされる |
+
+`serialize` の返却形 (`preview_url` は配下の最初の HTML ファイル、無ければ先頭ファイルを指す):
+
+```json
+{
+  "id": 1,
+  "public_id": "Don9HV0w",
+  "title": "Bundle Test",
+  "created_at": "2026-08-11T02:13:26+09:00",
+  "preview_url": "/v/b/Don9HV0w/index.html",
+  "files": [
+    { "id": 3, "filename": "index.html", "title": "index", "file_type": "html", "created_at": "...", "preview_url": "/v/b/Don9HV0w/index.html" },
+    { "id": 4, "filename": "style.css", "title": "style", "file_type": "css", "created_at": "...", "preview_url": "/v/b/Don9HV0w/style.css" }
+  ]
+}
+```
+
 ### `PreviewController`
 
-`/v/:public_id` — アップロード済みファイルをブラウザで直接開けるようにする、認証不要 (誰でもリンクを知っていれば開ける) のエンドポイント。
+`/v/:public_id` (単体ファイル) と `/v/b/:bundle_public_id/*filename` (バンドル配下ファイル) の両方を配信する、認証不要 (誰でもリンクを知っていれば開ける) のエンドポイント。どちらのアクションも共通の `deliver(user_file)` に処理を委譲している。
 
 ```ruby
-response.set_header("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-modals;")
-response.set_header("X-Content-Type-Options", "nosniff")
-send_data user_file.file.download, type: user_file.content_type, filename: user_file.filename, disposition: "inline"
+def show
+  deliver(UserFile.find_by!(public_id: params[:public_id]))
+end
+
+def bundle_show
+  bundle = Bundle.find_by!(public_id: params[:bundle_public_id])
+  deliver(bundle.user_files.find_by!(filename: params[:filename]))
+end
+
+private
+
+def deliver(user_file)
+  response.set_header("Content-Security-Policy", "sandbox allow-scripts allow-forms allow-modals;")
+  response.set_header("X-Content-Type-Options", "nosniff")
+  send_data user_file.file.download, type: user_file.content_type, filename: user_file.filename, disposition: "inline"
+end
 ```
 
 - ユーザーがアップロードした **信頼できない HTML/JS** をそのまま配信するため、`sandbox` ディレクティブ付き CSP でこのレスポンスを親アプリから隔離している。`allow-same-origin` を **含めていない** のがポイントで、これによりサンドボックス化されたドキュメントはこのアプリの Cookie/セッション/localStorage を一切読めない (別オリジン扱いになる)。
 - `allow-scripts` / `allow-forms` / `allow-modals` は許可しているため、アップロードされた HTML 内の JS 実行やフォーム操作、`alert()` 等は動作する。
 - `X-Content-Type-Options: nosniff` で、ブラウザによる MIME タイプの推測 (スニッフィング) を防止。
-- レコードが見つからない場合は `404` を返す (`rescue_from` ではなく `rescue` 節で individually 処理。`Api::V1::BaseController` を継承していないため、共通の `rescue_from` は効かない)。
+- `rescue_from ActiveRecord::RecordNotFound do head :not_found end` を両アクション共通で登録している (`Api::V1::BaseController` を継承していないため、API 側の共通ハンドリングとは別にこのコントローラー内で定義)。
 - `content_type` は `UserFile#content_type` で拡張子から決定 (下記モデル参照)。
+- `skip_forgery_protection` を指定している。Rails は標準で「クロスオリジンの GET リクエストに対する JavaScript レスポンス」を CSRF 対策の一環としてブロックする (`<script src>` によるレガシーな JSONP 型情報漏洩を防ぐ仕組み)。しかしこのアクションはまさに `<script src="app.js">` のようなクロスオリジン埋め込みを意図的に許可する必要がある公開エンドポイントであり、Cookie/セッションを使った認証も行わないため、このチェックは無効化している。無効化しないと、拡張子 `js` のファイル (単体・バンドル配下いずれも) のプレビューが `422 Unprocessable Content` になる。
 
 ### `FallbackController`
 
 `layout false` で `app/views/fallback/index.html.erb` をそのまま返すだけの薄いコントローラー。ここが React SPA の entry point になる。詳細は [frontend-architecture.md](./frontend-architecture.md) を参照。
 
+## モデル: `HasPublicId` concern
+
+`app/models/concerns/has_public_id.rb`。`UserFile` と `Bundle` の両方が持つ「外部公開用 ID を採番・検証する」ロジックを共通化した concern。
+
+```ruby
+module HasPublicId
+  extend ActiveSupport::Concern
+
+  included do
+    before_validation :assign_public_id, on: :create
+    validates :public_id, presence: true, uniqueness: true
+  end
+
+  private
+
+  def assign_public_id
+    self.public_id ||= loop do
+      candidate = SecureRandom.alphanumeric(8)
+      break candidate unless self.class.exists?(public_id: candidate)
+    end
+  end
+end
+```
+
+`SecureRandom.alphanumeric(8)` を生成し、DB に重複が無いことを確認しながら採番する。内部の連番 `id` を外部 URL に晒さないための仕組み。
+
 ## モデル: `UserFile`
 
 ```ruby
 class UserFile < ApplicationRecord
+  include HasPublicId
+
   ALLOWED_EXTENSIONS = %w[html js css json svg].freeze
   MAX_FILE_SIZE = 10.megabytes
 
+  belongs_to :bundle, optional: true
   has_one_attached :file
-  before_validation :assign_public_id, on: :create
+  before_destroy :purge_file
   ...
 end
 ```
 
 | カラム | 型 | 説明 |
 |---|---|---|
-| `public_id` | string, unique | `/v/:public_id` で使う外部公開用 ID。`SecureRandom.alphanumeric(8)` で生成し、`create` 時に重複が無いことを DB に問い合わせながら採番 (`assign_public_id`)。内部の `id` (連番) を外部に晒さないための仕組み |
-| `filename` | string | アップロード時の元ファイル名 |
+| `public_id` | string, unique | `/v/:public_id` で使う外部公開用 ID (`HasPublicId` concern で採番) |
+| `bundle_id` | bigint, nullable, FK | 所属する `Bundle`。`nil` の場合は単体ファイル。`(bundle_id, filename)` にユニークインデックス (同一バンドル内でのファイル名重複を防止) |
+| `filename` | string | アップロード時の元ファイル名。バンドル配下の場合は `/v/b/:bundle_public_id/:filename` のルックアップキーとしても使われる |
 | `title` | string | 表示用タイトル。未指定時は拡張子を除いたファイル名がデフォルト (コントローラー側で設定) |
 | `file_type` | string | 拡張子 (`html`/`js`/`css`/`json`/`svg` のいずれか) |
 | `file` (Active Storage) | — | ファイル本体。`has_one_attached :file` |
 
 バリデーション:
-- `public_id` / `filename` / `title` / `file_type` の presence、`public_id` の uniqueness
+- `public_id` の presence/uniqueness は `HasPublicId` concern 側
+- `filename` / `title` / `file_type` の presence
+- `filename` の uniqueness は `bundle_id` スコープ・かつ `bundle_id` が存在する場合のみ検証 (`if: -> { bundle_id.present? }`)。単体ファイル同士 (`bundle_id: nil`) は従来通り同名ファイル名を許容する — PostgreSQL のユニークインデックスは NULL 同士を区別するため、DB 制約とアプリ側バリデーションの両方でこの挙動を安全に実現している
+- `filename_has_no_path_separators`: `filename` に `/` や `\` を含まないこと (ルーティングのキーとして使われるようになったため)
 - `file_type` は `ALLOWED_EXTENSIONS` に含まれること
 - `file_attached`: `file.attached?` であること
 - `file_extension_allowed`: 添付ファイルの拡張子 (`file.filename.extension_without_delimiter`) が許可リストに含まれること — `file_type` パラメータとは独立に、実ファイルの拡張子でも二重にチェックしている
@@ -153,25 +236,54 @@ end
 
 `content_type` はプレビュー配信時の `Content-Type` ヘッダーを `file_type` から決定するメソッド (例: `html` → `text/html; charset=utf-8`)。Active Storage が推測する content type ではなく、こちらの固定マッピングを優先して使っている。
 
+`before_destroy :purge_file` で、レコード削除時に Active Storage の添付を明示的にパージする (自動パージされないため)。単体ファイルの直接削除・バンドルの `dependent: :destroy` によるカスケード削除のどちらでも、この 1 箇所で確実に実体ファイルが削除される。
+
+## モデル: `Bundle`
+
+```ruby
+class Bundle < ApplicationRecord
+  include HasPublicId
+
+  MAX_FILES = 20
+
+  has_many :user_files, dependent: :destroy
+
+  validates :title, presence: true
+end
+```
+
+複数の `UserFile` を 1 つの「セット」としてまとめるためのモデル。`public_id` はバンドル配下のファイルを配信する `/v/b/:bundle_public_id/*filename` ルートで使われる。`MAX_FILES` (20) は `Api::V1::BundlesController#create` で、書き込み前にアップロード件数の上限チェックに使われる (無制限のファイル数を 1 トランザクションで作成できてしまうのを防ぐ防御的な上限)。
+
 ## データベース
 
-PostgreSQL。主なテーブルは 2 系統:
+PostgreSQL。主なテーブルは 3 系統:
 
 - **Active Storage 標準テーブル** (`active_storage_blobs` / `active_storage_attachments` / `active_storage_variant_records`) — Rails の Active Storage エンジン提供のマイグレーションそのまま
 - **`user_files`** — アプリ固有のテーブル。`public_id` にユニークインデックス
+- **`bundles`** — 複数の `user_files` をまとめる「セット」。`public_id` にユニークインデックス
 
 ```ruby
+create_table "bundles" do |t|
+  t.string "public_id", null: false
+  t.string "title", null: false
+  t.timestamps
+end
+add_index :bundles, :public_id, unique: true
+
 create_table "user_files" do |t|
+  t.bigint "bundle_id"
   t.string "public_id", null: false
   t.string "filename", null: false
   t.string "title", null: false
   t.string "file_type", null: false
   t.timestamps
 end
+add_index :user_files, [:bundle_id, :filename], unique: true
 add_index :user_files, :public_id, unique: true
+add_foreign_key :user_files, :bundles
 ```
 
-`user_files` にユーザーを表す外部キーは無い (現状は全ユーザー共有)。
+`user_files`/`bundles` にユーザーを表す外部キーは無い (現状は全ユーザー共有)。`user_files.bundle_id` がこのアプリで最初の (そして現状唯一の) アプリ内モデル間外部キー。
 
 ### 接続設定 (`config/database.yml`)
 
@@ -192,7 +304,7 @@ add_index :user_files, :public_id, unique: true
 
 ## セキュリティまわりの設計判断
 
-- **CSRF**: API (`Api::V1::BaseController`) はトークン検証をスキップ。フォーム由来の CSRF 対策が前提としている「ブラウザセッション認証」をこのアプリは使っておらず (IAP 委譲)、かつ SPA からの `fetch` はトークンを持たないため。
+- **CSRF**: API (`Api::V1::BaseController`) はトークン検証をスキップ。フォーム由来の CSRF 対策が前提としている「ブラウザセッション認証」をこのアプリは使っておらず (IAP 委譲)、かつ SPA からの `fetch` はトークンを持たないため。`PreviewController` も `skip_forgery_protection` でトークン検証と、それに伴う「クロスオリジン JS レスポンス」ブロックの両方を無効化している (詳細は `PreviewController` の項を参照)。
 - **アップロードファイルの隔離**: `PreviewController` が配信するレスポンスは `sandbox` CSP (allow-same-origin なし) で親アプリから完全に隔離。ユーザーが `<script>alert(document.cookie)</script>` を含む HTML をアップロードしても、サンドボックス内では本体アプリの Cookie/セッションにアクセスできない。
 - **拡張子ホワイトリスト**: `ALLOWED_EXTENSIONS` (html/js/css/json/svg) 以外は拒否。SVG は XSS ベクタになり得るが `sandbox` 配信により影響を局所化している。
 - **ファイルサイズ上限**: 10MB (`MAX_FILE_SIZE`)。

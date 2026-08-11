@@ -1,18 +1,22 @@
 class UserFile < ApplicationRecord
+  include HasPublicId
+
   ALLOWED_EXTENSIONS = %w[html js css json svg].freeze
   MAX_FILE_SIZE = 10.megabytes
 
+  belongs_to :bundle, optional: true
   has_one_attached :file
 
-  before_validation :assign_public_id, on: :create
+  before_destroy :purge_file
 
-  validates :public_id, presence: true, uniqueness: true
   validates :filename, presence: true
+  validates :filename, uniqueness: { scope: :bundle_id }, if: -> { bundle_id.present? }
   validates :title, presence: true
   validates :file_type, presence: true, inclusion: { in: ALLOWED_EXTENSIONS }
   validate :file_attached
   validate :file_extension_allowed
   validate :file_size_within_limit
+  validate :filename_has_no_path_separators
 
   def content_type
     case file_type
@@ -27,11 +31,8 @@ class UserFile < ApplicationRecord
 
   private
 
-  def assign_public_id
-    self.public_id ||= loop do
-      candidate = SecureRandom.alphanumeric(8)
-      break candidate unless UserFile.exists?(public_id: candidate)
-    end
+  def purge_file
+    file.purge if file.attached?
   end
 
   def file_attached
@@ -49,5 +50,11 @@ class UserFile < ApplicationRecord
     return unless file.attached?
 
     errors.add(:file, "is too large (max #{MAX_FILE_SIZE / 1.megabyte}MB)") if file.byte_size > MAX_FILE_SIZE
+  end
+
+  def filename_has_no_path_separators
+    return if filename.blank?
+
+    errors.add(:filename, "must not contain path separators") if filename.include?("/") || filename.include?("\\")
   end
 end
