@@ -1,16 +1,13 @@
 class UserFile < ApplicationRecord
-  include HasPublicId
-
   ALLOWED_EXTENSIONS = %w[html js css json svg].freeze
   MAX_FILE_SIZE = 10.megabytes
 
-  belongs_to :bundle, optional: true
+  belongs_to :bundle
   has_one_attached :file
 
   before_destroy :purge_file
 
-  validates :filename, presence: true
-  validates :filename, uniqueness: { scope: :bundle_id }, if: -> { bundle_id.present? }
+  validates :filename, presence: true, uniqueness: { scope: :bundle_id }
   validates :title, presence: true
   validates :file_type, presence: true, inclusion: { in: ALLOWED_EXTENSIONS }
   validate :file_attached

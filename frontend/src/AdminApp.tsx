@@ -1,16 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChangeEvent, DragEvent, FormEvent } from "react";
 
-interface UserFile {
-  id: number;
-  public_id: string;
-  title: string;
-  filename: string;
-  file_type: string;
-  created_at: string;
-  preview_url: string;
-}
-
 interface BundleFile {
   id: number;
   filename: string;
@@ -51,44 +41,11 @@ function formatDate(iso: string): string {
   });
 }
 
-async function fetchUserFiles(): Promise<UserFile[]> {
-  const res = await fetch("/api/v1/user_files", {
-    headers: { Accept: "application/json" },
-  });
-  if (!res.ok) throw new Error("一覧の取得に失敗しました");
-  return res.json();
-}
-
-async function uploadUserFile(file: File, title: string): Promise<UserFile> {
-  const body = new FormData();
-  body.append("file", file);
-  if (title.trim()) body.append("title", title.trim());
-
-  const res = await fetch("/api/v1/user_files", {
-    method: "POST",
-    headers: { Accept: "application/json" },
-    body,
-  });
-
-  if (!res.ok) {
-    const payload = await res.json().catch(() => null);
-    const message = payload?.errors?.join(", ") ?? "アップロードに失敗しました";
-    throw new Error(message);
-  }
-
-  return res.json();
-}
-
-async function deleteUserFile(id: number): Promise<void> {
-  const res = await fetch(`/api/v1/user_files/${id}`, { method: "DELETE" });
-  if (!res.ok) throw new Error("削除に失敗しました");
-}
-
 async function fetchBundles(): Promise<Bundle[]> {
   const res = await fetch("/api/v1/bundles", {
     headers: { Accept: "application/json" },
   });
-  if (!res.ok) throw new Error("バンドル一覧の取得に失敗しました");
+  if (!res.ok) throw new Error("一覧の取得に失敗しました");
   return res.json();
 }
 
@@ -159,7 +116,7 @@ function UploadDropzone({ onFilesSelected }: { onFilesSelected: (files: File[]) 
         ここにファイルをドラッグ＆ドロップ、またはクリックして選択（複数選択可）
       </p>
       <p className="text-xs text-slate-400">
-        許可拡張子: {ALLOWED_EXTENSIONS.map((ext) => `.${ext}`).join(" / ")}（最大10MB、セットは最大
+        許可拡張子: {ALLOWED_EXTENSIONS.map((ext) => `.${ext}`).join(" / ")}（最大10MB、一度に最大
         {MAX_FILES_PER_BUNDLE}ファイル）
       </p>
       <input
@@ -175,7 +132,6 @@ function UploadDropzone({ onFilesSelected }: { onFilesSelected: (files: File[]) 
 }
 
 export default function AdminApp() {
-  const [userFiles, setUserFiles] = useState<UserFile[]>([]);
   const [bundles, setBundles] = useState<Bundle[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -184,29 +140,21 @@ export default function AdminApp() {
   const [titleInput, setTitleInput] = useState("");
   const [isUploading, setIsUploading] = useState(false);
 
-  const loadUserFiles = useCallback(async () => {
-    setUserFiles(await fetchUserFiles());
-  }, []);
-
   const loadBundles = useCallback(async () => {
-    setBundles(await fetchBundles());
-  }, []);
-
-  const loadAll = useCallback(async () => {
     setIsLoading(true);
     try {
-      await Promise.all([loadUserFiles(), loadBundles()]);
+      setBundles(await fetchBundles());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "一覧の取得に失敗しました");
     } finally {
       setIsLoading(false);
     }
-  }, [loadUserFiles, loadBundles]);
+  }, []);
 
   useEffect(() => {
-    loadAll();
-  }, [loadAll]);
+    loadBundles();
+  }, [loadBundles]);
 
   const handleFilesSelected = useCallback((files: File[]) => {
     if (files.length > MAX_FILES_PER_BUNDLE) {
@@ -239,13 +187,8 @@ export default function AdminApp() {
 
     setIsUploading(true);
     try {
-      if (pendingFiles.length === 1) {
-        await uploadUserFile(pendingFiles[0], titleInput);
-        await loadUserFiles();
-      } else {
-        await uploadBundle(pendingFiles, titleInput);
-        await loadBundles();
-      }
+      await uploadBundle(pendingFiles, titleInput);
+      await loadBundles();
       setPendingFiles([]);
       setTitleInput("");
       setError(null);
@@ -253,18 +196,6 @@ export default function AdminApp() {
       setError(err instanceof Error ? err.message : "アップロードに失敗しました");
     } finally {
       setIsUploading(false);
-    }
-  };
-
-  const handleDelete = async (userFile: UserFile) => {
-    if (!window.confirm(`「${userFile.title}」を削除しますか？この操作は取り消せません。`)) {
-      return;
-    }
-    try {
-      await deleteUserFile(userFile.id);
-      setUserFiles((current) => current.filter((file) => file.id !== userFile.id));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "削除に失敗しました");
     }
   };
 
@@ -336,64 +267,12 @@ export default function AdminApp() {
           )}
         </section>
 
-        <section className="overflow-hidden rounded-xl bg-white shadow-sm">
-          {isLoading ? (
-            <p className="p-6 text-sm text-slate-500">読み込み中...</p>
-          ) : userFiles.length === 0 ? (
-            <p className="p-6 text-sm text-slate-500">まだファイルがありません。</p>
-          ) : (
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-                <tr>
-                  <th className="px-4 py-3">タイトル</th>
-                  <th className="px-4 py-3">種別</th>
-                  <th className="px-4 py-3">作成日時</th>
-                  <th className="px-4 py-3 text-right">操作</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {userFiles.map((userFile) => (
-                  <tr key={userFile.id}>
-                    <td className="max-w-64 truncate px-4 py-3 font-medium">
-                      <a
-                        href={userFile.preview_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline"
-                      >
-                        {userFile.title}
-                      </a>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-                        {userFile.file_type}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-slate-500">{formatDate(userFile.created_at)}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex justify-end gap-2">
-                        <button
-                          onClick={() => handleDelete(userFile)}
-                          className="rounded-md px-2 py-1 text-red-600 hover:bg-red-50"
-                        >
-                          削除
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </section>
-
         <section className="space-y-4">
-          <h2 className="text-lg font-semibold text-slate-800">バンドル</h2>
           {isLoading ? (
             <p className="rounded-xl bg-white p-6 text-sm text-slate-500 shadow-sm">読み込み中...</p>
           ) : bundles.length === 0 ? (
             <p className="rounded-xl bg-white p-6 text-sm text-slate-500 shadow-sm">
-              まだバンドルがありません。複数ファイルを同時に選択・ドロップすると作成されます。
+              まだファイルがありません。
             </p>
           ) : (
             bundles.map((bundle) => (
@@ -415,7 +294,18 @@ export default function AdminApp() {
                       )}
                     </h3>
                     <p className="text-xs text-slate-500">
-                      {formatDate(bundle.created_at)}・{bundle.files.length}ファイル
+                      {formatDate(bundle.created_at)}
+                      {bundle.files.length === 1 ? (
+                        <>
+                          {" "}
+                          ・
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+                            {bundle.files[0].file_type}
+                          </span>
+                        </>
+                      ) : (
+                        `・${bundle.files.length}ファイル`
+                      )}
                     </p>
                   </div>
                   <div className="flex shrink-0 gap-2">
@@ -423,29 +313,31 @@ export default function AdminApp() {
                       onClick={() => handleDeleteBundle(bundle)}
                       className="rounded-md px-2 py-1 text-sm text-red-600 hover:bg-red-50"
                     >
-                      バンドル削除
+                      削除
                     </button>
                   </div>
                 </div>
-                <ul className="mt-3 divide-y divide-slate-100 text-sm">
-                  {bundle.files.map((file) => (
-                    <li key={file.id} className="flex items-center justify-between gap-2 py-2">
-                      <span className="min-w-0 truncate">
-                        <a
-                          href={file.preview_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-blue-600 hover:underline"
-                        >
-                          {file.filename}
-                        </a>{" "}
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-                          {file.file_type}
+                {bundle.files.length > 1 && (
+                  <ul className="mt-3 divide-y divide-slate-100 text-sm">
+                    {bundle.files.map((file) => (
+                      <li key={file.id} className="flex items-center justify-between gap-2 py-2">
+                        <span className="min-w-0 truncate">
+                          <a
+                            href={file.preview_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:underline"
+                          >
+                            {file.filename}
+                          </a>{" "}
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+                            {file.file_type}
+                          </span>
                         </span>
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             ))
           )}
