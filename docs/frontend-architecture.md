@@ -31,15 +31,15 @@ React (Vite/TypeScript/Tailwind) を Rails アプリに統合する際、`vite_r
 ### 開発環境 (development)
 
 1. ブラウザが `http://localhost:3000/` にアクセス
-2. `config/routes.rb` の `root to: "fallback#index"` (それ以外の HTML GET は `get "*path"` の SPA フォールバックも同じ経路) により `FallbackController#index` が呼ばれる
-3. `FallbackController` (`layout false`) が `app/views/fallback/index.html.erb` をそのままレンダリング
+2. `config/routes.rb` の `root to: "admin#index"` により `AdminController#index` が呼ばれる (クライアントサイドルーティングを使っていないため、`/` 以外の HTML GET を拾う SPA フォールバックルートは無い)
+3. `AdminController` (`layout false`) が `app/views/admin/index.html.erb` をそのままレンダリング
 4. このビューが `ApplicationHelper#vite_client_tag` / `#vite_entry_tag` を呼び、`Rails.env.development?` が true なので次の3つの `<script>` を出力する
    1. `http://localhost:5173/@vite/client` — Vite の HMR クライアント
    2. React Fast Refresh の preamble (後述)
    3. `http://localhost:5173/src/main.tsx` — アプリの entry module
 5. ブラウザはこれらを **Vite dev server (`:5173`) に対して直接** リクエストする。Vite は `vite.config.ts` の `server.cors` のデフォルト (`true`) により、`:3000` からのクロスオリジンアクセスを許可している
 6. `main.tsx` 以降の相対 import (`@/AdminApp` など) は、import 元のモジュール自身が `:5173` から取得されているため、すべて `:5173` を基準に解決される。`:3000` に飛ぶことはない
-7. React アプリ内から `fetch("/api/v1/user_files")` 等を呼ぶと、実行元のページが `:3000` なので **そのまま Rails に届く**(プロキシ不要)
+7. React アプリ内から `fetch("/api/v1/bundles")` 等を呼ぶと、実行元のページが `:3000` なので **そのまま Rails に届く**(プロキシ不要)
 
 ### 本番環境 (production) ※ 未検証・保留中
 
@@ -74,10 +74,10 @@ React (Vite/TypeScript/Tailwind) を Rails アプリに統合する際、`vite_r
 
 | ファイル | 役割 |
 |---|---|
-| `app/controllers/fallback_controller.rb` | entry HTML を返すコントローラー。`layout false` で `application.html.erb` を経由しない |
-| `app/views/fallback/index.html.erb` | entry HTML 本体。`<div id="root">` と Vite 関連タグを出力 |
+| `app/controllers/admin_controller.rb` | entry HTML を返すコントローラー。`layout false` で `application.html.erb` を経由しない |
+| `app/views/admin/index.html.erb` | entry HTML 本体。`<div id="root">` と Vite 関連タグを出力 |
 | `app/helpers/application_helper.rb` | `vite_client_tag` / `vite_entry_tag` を定義。開発/本番の分岐、preamble 注入、manifest 解決を担う |
-| `config/routes.rb` | `root` と SPA フォールバック (`get "*path"`) が `fallback#index` を指す |
+| `config/routes.rb` | `root` が `admin#index` を指す |
 | `frontend/vite.config.ts` | `server.port: 5173` を固定 (ヘルパー側でハードコードしているため)、`build.manifest: true`、entry を `src/main.tsx` に固定、`emptyOutDir: false` で Rails 管理下の `public/` 直下ファイルを消さないようにしている |
 | `frontend/index.html` | ビルドやヘルパー経由のアクセスでは使われない。`pnpm dev` 中に `http://localhost:5173` に直接アクセスして単体プレビューしたい場合のためだけに残置 |
 | `frontend/src/main.tsx` | entry module。`starter(AdminApp)` を呼ぶ |
@@ -98,4 +98,4 @@ pnpm dev
 
 - `:5173` はヘルパー側 (`VITE_DEV_SERVER_URL`) にハードコードしているため、Vite dev server がポート競合等で別ポードに逃げると壊れる。`vite.config.ts` 側で `strictPort: true` にしてあるのはこのため (競合時は自動フォールバックせずエラーで気付けるようにしている)
 - 本番の manifest 経由配信は未検証 (前述)
-- `frontend/index.html` はビルドに使われなくなったので、内容が entry HTML (`app/views/fallback/index.html.erb`) と乖離しても気付きにくい。手で更新する場合は両方揃える
+- `frontend/index.html` はビルドに使われなくなったので、内容が entry HTML (`app/views/admin/index.html.erb`) と乖離しても気付きにくい。手で更新する場合は両方揃える

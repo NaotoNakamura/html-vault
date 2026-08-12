@@ -10,10 +10,6 @@ class PreviewController < ApplicationController
     head :not_found
   end
 
-  def show
-    deliver(UserFile.find_by!(public_id: params[:public_id]))
-  end
-
   def bundle_show
     bundle = Bundle.find_by!(public_id: params[:bundle_public_id])
     deliver(bundle.user_files.find_by!(filename: params[:filename]))

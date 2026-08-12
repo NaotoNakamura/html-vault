@@ -1,4 +1,4 @@
-class FallbackController < ActionController::Base
+class AdminController < ActionController::Base
   layout false
 
   def index

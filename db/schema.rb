@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_08_11_020929) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_11_091218) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -51,15 +51,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_11_020929) do
   end
 
   create_table "user_files", force: :cascade do |t|
-    t.bigint "bundle_id"
+    t.bigint "bundle_id", null: false
     t.datetime "created_at", null: false
     t.string "file_type", null: false
     t.string "filename", null: false
-    t.string "public_id", null: false
     t.string "title", null: false
     t.datetime "updated_at", null: false
     t.index ["bundle_id", "filename"], name: "index_user_files_on_bundle_id_and_filename", unique: true
-    t.index ["public_id"], name: "index_user_files_on_public_id", unique: true
   end
 
   add_foreign_key "active_storage_attachments", "active_storage_blobs", column: "blob_id"
