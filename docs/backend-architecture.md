@@ -299,7 +299,7 @@ add_foreign_key :user_files, :bundles
 - **アップロードファイルの隔離**: `PreviewController` が配信するレスポンスは `sandbox` CSP (allow-same-origin なし) で親アプリから完全に隔離。ユーザーが `<script>alert(document.cookie)</script>` を含む HTML をアップロードしても、サンドボックス内では本体アプリの Cookie/セッションにアクセスできない。
 - **拡張子ホワイトリスト**: `ALLOWED_EXTENSIONS` (html/js/css/json/svg) 以外は拒否。SVG は XSS ベクタになり得るが `sandbox` 配信により影響を局所化している。
 - **ファイルサイズ上限**: 10MB (`MAX_FILE_SIZE`)。
-- **CSP (initializer)**: `config/initializers/content_security_policy.rb` はテンプレートのままコメントアウトされており、アプリ全体 (SPA 側) の CSP は未設定。`PreviewController` のヘッダー設定はそのレスポンス限定。
+- **CSP (initializer)**: `config/initializers/content_security_policy.rb` でアプリ全体 (`AdminController` が返す管理画面 SPA) 向けの CSP を設定済み。`default-src 'self'` を基本に `object-src 'none'` / `base-uri 'none'` / `frame-ancestors 'none'`。開発環境のみ Vite dev server (`:5173`) 向けの HMR/Fast Refresh preamble 用に `script-src` / `style-src` に `'unsafe-inline'` と `http://localhost:5173`、`connect-src` に `http://localhost:5173` と `ws://localhost:5173` を追加している (本番はこれらの緩和なし、`'self'` のみ)。`PreviewController` は `response.set_header` で `sandbox` CSP を個別にセットしており、`ActionDispatch::ContentSecurityPolicy::Middleware` は「レスポンスに既に `Content-Security-Policy` ヘッダーがあればスキップする」実装のため、ここで設定したグローバルポリシーとは衝突しない。
 
 ## 環境別設定の要点
 
@@ -326,7 +326,6 @@ docker compose exec web bash -c "rm -f tmp/pids/server.pid && bundle exec rails 
 
 ## 既知の制約・未検証事項
 
-- **認可なし**: `current_user_email` はどこからも呼ばれておらず、`UserFile` はユーザーに紐付いていない。IAP でログインした任意のユーザーが全ファイルを閲覧・削除できる。将来的にファイル所有者を絞り込む場合は `user_files` にオーナー用カラムの追加と、コントローラー側での絞り込み/認可チェックが必要。
+- **認可なし (意図的な設計判断)**: `current_user_email` はどこからも呼ばれておらず、`UserFile` はユーザーに紐付いていない。IAP でログインした任意のユーザーが全ファイルを閲覧・削除できる。本アプリの利用者は開発者本人のみを想定しているため、ユーザー間のデータ隔離・認可チェックは現状不要と判断し未実装のままにしている。複数ユーザーでの利用に変わる場合は `user_files` にオーナー用カラムの追加と、コントローラー側での絞り込み/認可チェックが必要になる。
 - **本番のストレージ**: `production.rb` が `Disk` サービスを指したままで、S3 等への切り替えが未実施。
-- **CSP (アプリ全体)**: `content_security_policy.rb` initializer は未設定。SPA 側の XSS 対策は個別のブラウザ標準保護に依存している。
 - **IAP 前提の未検証部分**: 本番で実際に IAP が手前に立ち、ヘッダーが期待通り渡ってくるかは未検証 (開発ではダミーメールにフォールバックするのみ)。
