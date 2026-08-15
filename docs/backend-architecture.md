@@ -134,7 +134,7 @@ end
 
 ### `AdminController`
 
-`layout false` で `app/views/admin/index.html.erb` をそのまま返すだけの薄いコントローラー。ここが React SPA (管理画面) の entry point になる。「フォールバック」ではなく `root` からのみ呼ばれる唯一のエントリーポイントであることを示す名前にしている (以前は `FallbackController` という名前だったが、未使用の `*path` キャッチオールルートを削除した際に実態に合わせて改名した)。詳細は [frontend-architecture.md](./frontend-architecture.md) を参照。
+`layout false` で `app/views/admin/index.html.erb` をそのまま返すだけの薄いコントローラー。ここが React SPA (管理画面) の entry point になる。詳細は [frontend-architecture.md](./frontend-architecture.md) を参照。
 
 ## モデル: `UserFile`
 
@@ -197,6 +197,63 @@ PostgreSQL。主なテーブルは 3 系統:
 - **Active Storage 標準テーブル** (`active_storage_blobs` / `active_storage_attachments` / `active_storage_variant_records`) — Rails の Active Storage エンジン提供のマイグレーションそのまま
 - **`user_files`** — アプリ固有のテーブル。`public_id` にユニークインデックス
 - **`bundles`** — 複数の `user_files` をまとめる「セット」。`public_id` にユニークインデックス
+
+### ER図
+
+```mermaid
+erDiagram
+    bundles ||--o{ user_files : "has_many (dependent: destroy)"
+    user_files ||--o| active_storage_attachments : "has_one_attached :file"
+    active_storage_attachments }o--|| active_storage_blobs : "belongs_to :blob"
+    active_storage_blobs ||--o{ active_storage_variant_records : "has_many :variant_records"
+
+    bundles {
+        bigint id PK
+        string public_id UK "SecureRandom.alphanumeric(8)"
+        string title
+        datetime created_at
+        datetime updated_at
+    }
+
+    user_files {
+        bigint id PK
+        bigint bundle_id FK "unique with filename"
+        string filename UK "unique per bundle_id"
+        string title
+        string file_type "html/js/css/json/svg"
+        datetime created_at
+        datetime updated_at
+    }
+
+    active_storage_attachments {
+        bigint id PK
+        string name
+        string record_type "polymorphic: UserFile"
+        bigint record_id FK
+        bigint blob_id FK
+        datetime created_at
+    }
+
+    active_storage_blobs {
+        bigint id PK
+        string key UK
+        string filename
+        string content_type
+        text metadata
+        string service_name
+        bigint byte_size
+        string checksum
+        datetime created_at
+    }
+
+    active_storage_variant_records {
+        bigint id PK
+        bigint blob_id FK
+        string variation_digest
+    }
+```
+
+`user_files.bundle_id` がアプリ内モデル間で唯一の外部キー (`bundles` 1 に対し `user_files` 多)。`user_files` から Active Storage への紐付けは `has_one_attached :file` によるポリモーフィック関連 (`active_storage_attachments.record_type = "UserFile"`) で、`bundles`/`user_files` に外部キーとしてのユーザーカラムは存在しない (既知の制約を参照)。
 
 ```ruby
 create_table "bundles" do |t|
@@ -273,4 +330,3 @@ docker compose exec web bash -c "rm -f tmp/pids/server.pid && bundle exec rails 
 - **本番のストレージ**: `production.rb` が `Disk` サービスを指したままで、S3 等への切り替えが未実施。
 - **CSP (アプリ全体)**: `content_security_policy.rb` initializer は未設定。SPA 側の XSS 対策は個別のブラウザ標準保護に依存している。
 - **IAP 前提の未検証部分**: 本番で実際に IAP が手前に立ち、ヘッダーが期待通り渡ってくるかは未検証 (開発ではダミーメールにフォールバックするのみ)。
-- **SPA フォールバックルートは無い**: 以前は `get "*path", to: "fallback#index", constraints: ->(req) { req.format.html? }` があったが、`frontend/` の React アプリにクライアントサイドルーティング (react-router 等) が存在せず未使用だったため削除した (このタイミングでコントローラーも「フォールバック」という役割を持たなくなったため `FallbackController` → `AdminController` に改名している)。今後クライアントサイドルーティングを追加する場合、ブラウザの直接アクセスやリロードでサブページの URL に来た際に正しく `AdminController#index` へフォールバックするよう、このルートを `root` の後・末尾に再度追加する必要がある。
