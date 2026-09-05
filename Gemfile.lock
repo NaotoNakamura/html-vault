@@ -101,7 +101,7 @@ GEM
       activesupport (>= 6.1)
     i18n (1.15.2)
       concurrent-ruby (~> 1.0)
-    image_processing (2.0.3)
+    image_processing (2.1.0)
     io-console (0.9.1)
     irb (1.18.0)
       pp (>= 0.6.0)
@@ -273,7 +273,7 @@ DEPENDENCIES
   brakeman
   bundler-audit
   debug
-  image_processing (~> 2.0)
+  image_processing (~> 2.1)
   pg (~> 1.1)
   propshaft
   puma (>= 5.0)
